@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conciliador MercadoPago — Sanswell</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --paper:#F6F7F9; --ink:#161A20; --muted:#6B7480; --line:#E3E6EB;
+    --panel:#1C2230; --on-panel:#E8ECF3; --on-panel-mut:#9AA6BC;
+    --ok:#18906A; --warn:#B97800; --warn-soft:#FBF1DD;
+    --danger:#C23A2B; --accent:#2E63E6;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 20px 80px}
+  header.top{display:flex;align-items:baseline;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:24px;flex-wrap:wrap}
+  .brand{font-weight:700;font-size:20px;letter-spacing:-.02em}
+  .brand small{display:block;font-weight:500;color:var(--muted);font-size:12.5px;letter-spacing:0}
+  .ledger-status{font-size:12.5px;color:var(--muted);font-family:var(--mono)}
+  .ledger-status b{color:var(--ink)}
+  .grid{display:grid;grid-template-columns:380px 1fr;gap:22px;align-items:start}
+  @media(max-width:820px){.grid{grid-template-columns:1fr}}
+  .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px}
+  .card h2{margin:0 0 14px;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:700}
+  .drop{border:1.5px dashed #C3CAD4;border-radius:10px;padding:26px 16px;text-align:center;cursor:pointer;transition:.15s;background:#FBFCFD}
+  .drop:hover,.drop.over{border-color:var(--accent);background:#F1F5FE}
+  .drop .big{font-weight:600;font-size:15px}
+  .drop .sub{color:var(--muted);font-size:12.5px;margin-top:4px}
+  .file-tag{margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--ok);display:none;white-space:pre-line}
+  .field{margin-top:16px}
+  .field label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:5px;font-weight:600}
+  .field input{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px 11px;font-family:var(--mono);font-size:15px;text-align:right;background:#fff;color:var(--ink)}
+  .field input:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:transparent}
+  .field input:disabled{background:#F2F4F7;color:var(--muted)}
+  .field .hint{font-size:11.5px;color:var(--muted);margin-top:4px}
+  .field .hint a{color:var(--accent);cursor:pointer;text-decoration:none}
+  .field .hint a:hover{text-decoration:underline}
+  .daychips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+  .chip{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 12px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:7px;font-family:var(--mono)}
+  .chip:hover{border-color:var(--accent)}
+  .chip.active{border-color:var(--ink);background:var(--ink);color:#fff}
+  .chip .ck{width:8px;height:8px;border-radius:50%;background:#C3CAD4}
+  .chip .ck.ok{background:var(--ok)} .chip .ck.bad{background:var(--warn)}
+  .resultpanel{background:var(--panel);border-radius:12px;color:var(--on-panel);overflow:hidden}
+  .rp-head{padding:14px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #2E3650}
+  .rp-head .d{font-family:var(--mono);font-size:13px;color:var(--on-panel-mut)}
+  .badge{font-family:var(--mono);font-size:12.5px;font-weight:700;padding:5px 11px;border-radius:20px}
+  .badge.ok{background:rgba(24,144,106,.18);color:#5FD6A6}
+  .badge.warn{background:rgba(185,120,0,.2);color:#F0B45A}
+  .badge.idle{background:#2E3650;color:var(--on-panel-mut)}
+  .waterfall{padding:14px 20px 6px}
+  .row{display:flex;justify-content:space-between;align-items:baseline;padding:7px 0;font-family:var(--mono);font-size:14.5px}
+  .row .lbl{color:var(--on-panel-mut);font-family:var(--sans);font-size:13.5px}
+  .row .val{font-variant-numeric:tabular-nums}
+  .row.add .val{color:#5FD6A6}
+  .row.sub .val{color:#F0A28C}
+  .row.total{border-top:1px solid #2E3650;margin-top:4px;padding-top:11px}
+  .row.total .lbl{color:var(--on-panel);font-weight:600}
+  .row.total .val{font-weight:700;font-size:16px}
+  .row.real .lbl{color:var(--on-panel)}
+  .check{margin:8px 20px 18px;border-radius:9px;padding:13px 16px;display:flex;justify-content:space-between;align-items:center;font-family:var(--mono)}
+  .check.ok{background:rgba(24,144,106,.15);color:#7BE0B4}
+  .check .big{font-size:20px;font-weight:700}
+  .check .lbl{font-family:var(--sans);font-size:13px}
+  .zeta{margin-top:18px}
+  .zeta .z-row{display:flex;justify-content:space-between;align-items:center;gap:12px;border:1px solid var(--line);border-radius:9px;padding:11px 13px;margin-bottom:9px}
+  .zeta .z-row .meta{font-size:12.5px;color:var(--muted)}
+  .zeta .z-row .meta b{color:var(--ink);font-weight:600}
+  .zeta .z-row .amt{font-family:var(--mono);font-size:16px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .zeta .z-row.in .amt{color:var(--ok)} .zeta .z-row.out .amt{color:var(--danger)} .zeta .z-row.mv .amt{color:var(--accent)}
+  .copybtn{border:1px solid var(--line);background:#fff;border-radius:6px;padding:4px 9px;font-size:11.5px;cursor:pointer;color:var(--muted)}
+  .copybtn:hover{border-color:var(--accent);color:var(--accent)}
+  details{margin-top:16px;border:1px solid var(--line);border-radius:9px;background:#fff}
+  details>summary{cursor:pointer;padding:11px 14px;font-size:13px;font-weight:600;list-style:none}
+  details>summary::-webkit-details-marker{display:none}
+  details>summary::before{content:"\25B8";color:var(--muted);margin-right:8px;font-size:11px}
+  details[open]>summary::before{content:"\25BE"}
+  .det-body{padding:4px 14px 14px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+  td.num,th.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .warnbox{background:var(--warn-soft);border:1px solid #EBD7A8;border-radius:9px;padding:12px 14px;margin-top:16px;font-size:13px}
+  .warnbox b{color:var(--warn)}
+  .uk-item{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+  .uk-item .t{font-family:var(--mono);font-size:12.5px;background:#fff;border:1px solid var(--line);padding:3px 7px;border-radius:5px}
+  select{border:1px solid var(--line);border-radius:6px;padding:5px 7px;font-size:12.5px;font-family:var(--sans)}
+  .actions{display:flex;gap:10px;margin-top:18px}
+  .btn{flex:1;border:none;border-radius:9px;padding:12px;font-size:14px;font-weight:600;cursor:pointer;font-family:var(--sans)}
+  .btn.primary{background:var(--ink);color:#fff} .btn.primary:hover{background:#000}
+  .btn.ghost{background:#fff;border:1px solid var(--line);color:var(--ink)} .btn.ghost:hover{border-color:var(--ink)}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .empty{color:var(--muted);font-size:13px;text-align:center;padding:30px 0}
+  .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--ink);color:#fff;padding:11px 18px;border-radius:8px;font-size:13.5px;opacity:0;transition:.25s;pointer-events:none}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .section-title{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:700;margin:34px 0 12px}
+  .del{color:var(--danger);cursor:pointer;font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">Conciliador MercadoPago
+      <small>Sanswell · BLUE LIFE SRL — cierre diario hacia ZetaSoftware</small>
+    </div>
+    <div class="ledger-status" id="ledgerStatus">Sin días guardados</div>
+  </header>
+
+  <div class="grid">
+    <div class="card">
+      <h2>1 · Cargar días</h2>
+      <div class="drop" id="drop">
+        <div class="big">Arrastrá uno o varios .xlsx</div>
+        <div class="sub">o hacé clic · podés sumar el día anterior para encadenar el saldo</div>
+        <input type="file" id="fileInput" accept=".xlsx,.xls" multiple hidden>
+      </div>
+      <div class="file-tag" id="fileTag"></div>
+
+      <div class="field">
+        <label for="ini" id="iniLabel">Saldo inicial</label>
+        <input id="ini" type="text" inputmode="decimal" placeholder="0,00">
+        <div class="hint" id="iniHint">Solo del día más antiguo. Los demás se encadenan solos.</div>
+      </div>
+      <div class="field">
+        <label for="real" id="realLabel">Saldo real de MercadoPago</label>
+        <input id="real" type="text" inputmode="decimal" placeholder="0,00">
+        <div class="hint">El saldo que muestra MP ese día. Define el retiro y el cuadre.</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="daychips" id="dayChips" style="display:none"></div>
+      <div class="resultpanel">
+        <div class="rp-head">
+          <span class="d" id="rpDate">— sin archivo —</span>
+          <span class="badge idle" id="rpBadge">esperando</span>
+        </div>
+        <div class="waterfall" id="waterfall">
+          <div class="empty" style="color:var(--on-panel-mut)">Cargá uno o varios archivos para ver la conciliación.</div>
+        </div>
+        <div class="check" id="checkBox" style="display:none">
+          <span class="lbl">Conciliación</span><span class="big" id="checkVal">—</span>
+        </div>
+      </div>
+
+      <div class="zeta card" id="zetaCard" style="margin-top:18px;display:none">
+        <h2>2 · Cargar en ZetaSoftware</h2>
+        <div class="z-row in">
+          <div class="meta">Ingreso Bancario — cuenta <b>MERCADO PAGO - $ - MP</b><br>Total de cobros del día</div>
+          <div style="display:flex;gap:8px;align-items:center"><button class="copybtn" data-copy="zIn">copiar</button><span class="amt" id="zIn">—</span></div>
+        </div>
+        <div class="z-row out">
+          <div class="meta">Egreso Bancario <b>52-EgresoBanc</b> — cuenta <b>MERCADO PAGO - $ - MP</b><br>Total de costos, comisiones y retenciones</div>
+          <div style="display:flex;gap:8px;align-items:center"><button class="copybtn" data-copy="zOut">copiar</button><span class="amt" id="zOut">—</span></div>
+        </div>
+        <div class="z-row mv" id="zMvRow">
+          <div class="meta">Transferencia MP → Banco<br>Retiro deducido del cuadre (registrar si corresponde)</div>
+          <div style="display:flex;gap:8px;align-items:center"><button class="copybtn" data-copy="zMv">copiar</button><span class="amt" id="zMv">—</span></div>
+        </div>
+
+        <div class="warnbox" id="ukBox" style="display:none">
+          <b>Tipos de operación nuevos.</b> Clasificalos una vez; la app los recuerda.
+          <div id="ukList"></div>
+        </div>
+
+        <details><summary>Detalle de costos por tipo</summary>
+          <div class="det-body"><table id="breakdown"><tbody></tbody></table></div>
+        </details>
+
+        <div class="actions">
+          <button class="btn primary" id="saveBtn">Guardar día</button>
+          <button class="btn ghost" id="exportBtn">Exportar Excel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-title">Historial de cierres</div>
+  <div class="card" style="padding:0">
+    <table id="histTable"><thead><tr>
+      <th>Fecha</th><th class="num">Saldo inicial</th><th class="num">Cobros</th><th class="num">Costos</th>
+      <th class="num">Saldo calculado</th><th class="num">Retiro</th><th class="num">Saldo real</th><th></th>
+    </tr></thead><tbody></tbody></table>
+    <div class="empty" id="histEmpty">Todavía no guardaste ningún día.</div>
+  </div>
+
+  <details style="margin-top:22px"><summary>Diccionario de tipos de operación</summary>
+    <div class="det-body">
+      <table id="dictTable"><thead><tr><th>Tipo (empieza con)</th><th>Categoría</th><th></th></tr></thead><tbody></tbody></table>
+      <div class="hint" style="margin-top:8px;color:var(--muted);font-size:12px">
+        ingreso = suma a Cobros · costo = suma a Egreso · neutro = se ignora (ej. Ingreso de dinero + Pago) · retiro = transferencia a banco
+      </div>
+    </div>
+  </details>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const SEED_DICT={
+  "cobro":"ingreso","retencion de impuesto":"costo","comision por venta de mercado":"costo",
+  "movimiento general":"costo","costo por intereses absorbidos":"costo","costo de mercado pago":"costo",
+  "reduccion impuesto al valor":"costo","costo por ofrecer cuotas":"costo","cargo por venta":"costo",
+  "bonificacion por envio":"costo","ingreso de dinero":"neutro","pago":"neutro",
+  "retiro de dinero":"retiro","transferencia":"retiro"
+};
+const LS_DICT="mp_dict_v1", LS_LEDGER="mp_ledger_v1";
+let DICT=Object.assign({},SEED_DICT,JSON.parse(localStorage.getItem(LS_DICT)||"{}"));
+let LEDGER=JSON.parse(localStorage.getItem(LS_LEDGER)||"[]");
+let DAYS=[];        // [{key,fecha,rows,real,start,close,result}]
+let SEL=0;          // índice del día seleccionado
+
+const $=id=>document.getElementById(id);
+const norm=s=>(s||"").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim();
+const fmt=n=>(n==null||isNaN(n))?"—":n.toLocaleString("es-UY",{minimumFractionDigits:2,maximumFractionDigits:2});
+const parseNum=s=>{ if(s==null)return null; s=String(s).trim(); if(!s)return null;
+  if(s.includes(",")) s=s.replace(/\./g,"").replace(",","."); const n=parseFloat(s); return isNaN(n)?null:n; };
+function classify(t){ t=norm(t); for(const k in DICT) if(t.startsWith(k)) return DICT[k]; return "desconocido"; }
+function diffDict(){ const d={}; for(const k in DICT) if(SEED_DICT[k]!==DICT[k]) d[k]=DICT[k]; return d; }
+
+/* Lectura silenciando el aviso "Bad uncompressed size" de SheetJS (cosmético, no pierde datos) */
+function quietRead(buf){
+  const ow=console.warn, oe=console.error, hide=a=>String(a&&a[0]||"").includes("uncompressed size");
+  console.warn=(...a)=>{ if(!hide(a)) ow.apply(console,a); };
+  console.error=(...a)=>{ if(!hide(a)) oe.apply(console,a); };
+  try{ return XLSX.read(buf,{type:"array"}); } finally{ console.warn=ow; console.error=oe; }
+}
+function parseRows(ws){
+  const a=XLSX.utils.sheet_to_json(ws,{header:1,raw:true});
+  let hi=a.findIndex(r=>r.some(c=>norm(c)==="tipo de operacion"));
+  if(hi<0) throw new Error("No encontré el encabezado 'Tipo de Operación'.");
+  const h=a[hi].map(norm), ci={f:h.indexOf("fecha de pago"),t:h.indexOf("tipo de operacion"),i:h.indexOf("importe")};
+  const out=[];
+  for(let i=hi+1;i<a.length;i++){ const r=a[i], im=parseFloat(r[ci.i]); if(!r[ci.t]||isNaN(im))continue;
+    out.push({fecha:r[ci.f],tipo:String(r[ci.t]),importe:im}); }
+  return out;
+}
+function reconcile(rows,ini,real){
+  let cobros=0,costos=0,neto=0; const unknown={}, byType={};
+  for(const m of rows){ const c=classify(m.tipo); neto+=m.importe;
+    if(c==="ingreso")cobros+=m.importe;
+    else if(c==="costo"){costos+=m.importe;byType[m.tipo]=(byType[m.tipo]||0)+m.importe;}
+    else if(c==="desconocido")unknown[m.tipo]=1; }
+  const saldoCalc=+(ini+neto).toFixed(2);
+  const retiro=(real!=null)?+(real-saldoCalc).toFixed(2):null;
+  return {cobros:+cobros.toFixed(2),costos:+Math.abs(costos).toFixed(2),neto:+neto.toFixed(2),
+    saldoCalc,retiro,byType,unknown:Object.keys(unknown),hasUnknown:Object.keys(unknown).length>0};
+}
+/* semilla del día más antiguo: campo manual, si no, último cierre del ledger anterior a ese día */
+function seedForFirst(){
+  const manual=parseNum($("ini").value); if(manual!=null) return manual;
+  if(DAYS.length){ const k=DAYS[0].key; const prev=LEDGER.filter(x=>x.key<k).pop(); if(prev) return prev.saldoCalc; }
+  return 0;
+}
+function chain(){
+  const seed=seedForFirst();
+  DAYS.forEach((d,i)=>{ d.start=(i===0)?seed:DAYS[i-1].close; d.result=reconcile(d.rows,d.start,d.real); d.close=d.result.saldoCalc; });
+}
+
+function recompute(){
+  if(!DAYS.length) return;
+  chain();
+  renderChips();
+  const d=DAYS[SEL], r=d.result;
+  // waterfall
+  const W=[["Saldo inicial",fmt(d.start),""],
+    ["(+) Cobros del día",fmt(r.cobros),"add"],
+    ["(–) Costos / comisiones / retenciones","-"+fmt(r.costos),"sub"],
+    ["= Saldo calculado",fmt(r.saldoCalc),"total"]];
+  if(d.real!=null){ W.push(["(–) Retiro / transferencia a banco",(r.retiro<0?"":"+")+fmt(r.retiro),"sub"]);
+    W.push(["= Saldo final calculado",fmt(+(r.saldoCalc+r.retiro).toFixed(2)),"total"]);
+    W.push(["Saldo real MercadoPago",fmt(d.real),"real"]); }
+  $("waterfall").innerHTML=W.map(([l,v,c])=>`<div class="row ${c}"><span class="lbl">${l}</span><span class="val">${v}</span></div>`).join("");
+  $("rpDate").textContent=d.fecha||"—";
+  const badge=$("rpBadge"),cb=$("checkBox");
+  if(d.real==null){ badge.className="badge idle"; badge.textContent="falta saldo real"; cb.style.display="none"; }
+  else if(r.hasUnknown){ badge.className="badge warn"; badge.textContent="revisar tipos"; cb.style.display="none"; }
+  else { badge.className="badge ok"; badge.textContent="cuadra"; cb.style.display="flex"; cb.className="check ok"; $("checkVal").textContent="0,00 \u2713"; }
+  // zeta
+  $("zetaCard").style.display="block";
+  $("zIn").textContent="$ "+fmt(r.cobros);
+  $("zOut").textContent="$ "+fmt(r.costos);
+  $("zMvRow").style.display=(d.real!=null && Math.abs(r.retiro)>=0.005)?"flex":"none";
+  $("zMv").textContent="$ "+fmt(Math.abs(r.retiro||0));
+  // breakdown
+  const bt=Object.entries(r.byType).sort((a,b)=>a[1]-b[1]);
+  $("breakdown").querySelector("tbody").innerHTML=bt.length
+    ? bt.map(([t,v])=>`<tr><td>${t}</td><td class="num">${fmt(v)}</td></tr>`).join("")+`<tr><td><b>Total costos</b></td><td class="num"><b>-${fmt(r.costos)}</b></td></tr>`
+    : `<tr><td class="empty">Sin costos.</td></tr>`;
+  // unknowns
+  const ub=$("ukBox"),ul=$("ukList");
+  if(r.hasUnknown){ ub.style.display="block";
+    ul.innerHTML=r.unknown.map(t=>`<div class="uk-item"><span class="t">${t}</span>
+      <select data-uk="${encodeURIComponent(t)}"><option value="">clasificar…</option>
+      <option value="ingreso">Ingreso (cobro)</option><option value="costo">Costo / comisión</option>
+      <option value="neutro">Neutro (ignorar)</option><option value="retiro">Retiro a banco</option></select></div>`).join("");
+    ul.querySelectorAll("select").forEach(s=>s.onchange=e=>{ const t=decodeURIComponent(e.target.dataset.uk),cat=e.target.value; if(!cat)return;
+      DICT[norm(t)]=cat; localStorage.setItem(LS_DICT,JSON.stringify(diffDict())); renderDict(); recompute(); toast("Tipo clasificado y recordado"); });
+  } else ub.style.display="none";
+  // botón guardar
+  const conReal=DAYS.filter(x=>x.real!=null).length;
+  $("saveBtn").textContent = conReal>1 ? `Guardar ${conReal} días` : "Guardar día";
+}
+
+function renderChips(){
+  const c=$("dayChips");
+  if(DAYS.length<=1){ c.style.display="none"; return; }
+  c.style.display="flex";
+  c.innerHTML=DAYS.map((d,i)=>{ const ok=d.real!=null && !d.result.hasUnknown;
+    const ckcls=d.real==null?"":(ok?"ok":"bad");
+    return `<div class="chip ${i===SEL?'active':''}" data-i="${i}"><span class="ck ${ckcls}"></span>${d.fecha}</div>`; }).join("");
+  c.querySelectorAll(".chip").forEach(ch=>ch.onclick=()=>{ SEL=+ch.dataset.i; syncFields(); recompute(); });
+}
+function syncFields(){
+  const multi=DAYS.length>1, d=DAYS[SEL];
+  $("iniLabel").textContent = multi ? `Saldo inicial (día más antiguo: ${DAYS[0].fecha})` : "Saldo inicial";
+  $("realLabel").textContent = multi ? `Saldo real — día ${d?d.fecha:''}` : "Saldo real de MercadoPago";
+  // saldo real del día seleccionado
+  $("real").value = (d&&d.real!=null)?fmt(d.real):"";
+}
+
+/* ===== carga de archivos (múltiples) ===== */
+function handleFiles(files){
+  const arr=[...files]; let pend=arr.length, all=[], names=[];
+  if(!pend)return;
+  arr.forEach(file=>{
+    const fr=new FileReader();
+    fr.onload=e=>{
+      try{ const wb=quietRead(e.target.result); const rows=parseRows(wb.Sheets[wb.SheetNames[0]]);
+        all=all.concat(rows); names.push(file.name+" ("+rows.length+")"); }
+      catch(err){ alert("Error en "+file.name+": "+err.message); }
+      if(--pend===0) buildDays(all,names);
+    };
+    fr.readAsArrayBuffer(file);
+  });
+}
+function buildDays(rows,names){
+  if(!rows.length){ alert("No encontré movimientos."); return; }
+  // conservar saldos reales ya tipeados por fecha
+  const prevReal={}; DAYS.forEach(d=>{ if(d.real!=null) prevReal[d.key]=d.real; });
+  const map={}; for(const m of rows){ const iso=String(m.fecha).slice(0,10); (map[iso]=map[iso]||[]).push(m); }
+  DAYS=Object.keys(map).sort().map(iso=>({ key:iso, fecha:iso.split("-").reverse().join("/"),
+    rows:map[iso], real: (iso in prevReal)?prevReal[iso]:null }));
+  SEL=DAYS.length-1; // mostrar el más reciente
+  $("fileTag").style.display="block";
+  $("fileTag").textContent="\u2713 "+names.join("\n\u2713 ")+"\n"+DAYS.length+" día(s): "+DAYS.map(d=>d.fecha).join(", ");
+  // prellenar semilla desde ledger si el campo está vacío
+  if(!$("ini").value){ const prev=LEDGER.filter(x=>x.key<DAYS[0].key).pop();
+    if(prev){ $("ini").value=fmt(prev.saldoCalc); $("iniHint").textContent="Tomado de "+prev.fecha+" (último cierre guardado)."; } }
+  syncFields(); recompute();
+}
+const drop=$("drop");
+drop.onclick=()=>$("fileInput").click();
+$("fileInput").onchange=e=>{ if(e.target.files.length) handleFiles(e.target.files); };
+["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("over");}));
+["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("over");}));
+drop.addEventListener("drop",e=>{ if(e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+$("ini").addEventListener("input",recompute);
+$("real").addEventListener("input",()=>{ if(DAYS[SEL]) DAYS[SEL].real=parseNum($("real").value); recompute(); });
+
+/* ===== copiar ===== */
+document.querySelectorAll(".copybtn").forEach(b=>b.onclick=()=>{
+  const raw=$(b.dataset.copy).textContent.replace(/[^\d,.-]/g,"").replace(/\./g,"").replace(",",".");
+  navigator.clipboard.writeText(raw); toast("Copiado: "+raw);
+});
+
+/* ===== guardar (todos los días con saldo real) / exportar ===== */
+function saveRec(d){
+  const rec={key:d.key,fecha:d.fecha,ini:d.start,cobros:d.result.cobros,costos:d.result.costos,
+    saldoCalc:d.result.saldoCalc,retiro:d.result.retiro,real:d.real,ts:Date.now()};
+  const i=LEDGER.findIndex(x=>x.key===rec.key); if(i>=0)LEDGER[i]=rec; else LEDGER.push(rec);
+}
+$("saveBtn").onclick=()=>{
+  if(!DAYS.length)return;
+  const tosave=DAYS.filter(d=>d.real!=null);
+  if(!tosave.length){ alert("Cargá el saldo real de al menos un día antes de guardar."); return; }
+  tosave.forEach(saveRec);
+  LEDGER.sort((a,b)=>a.key.localeCompare(b.key));
+  localStorage.setItem(LS_LEDGER,JSON.stringify(LEDGER));
+  renderHist(); renderStatus(); toast(tosave.length>1?tosave.length+" días guardados":"Día guardado");
+};
+$("exportBtn").onclick=()=>{
+  if(!DAYS.length)return; const d=DAYS[SEL]; let saldo=d.start;
+  const aoa=[["Fecha de Pago","Tipo de Operación","Importe","Saldo"]];
+  for(const m of d.rows){ saldo=+(saldo+m.importe).toFixed(2); aoa.push([m.fecha,m.tipo,m.importe,saldo]); }
+  const r=d.result; aoa.push([]); aoa.push(["","Cobros",r.cobros]); aoa.push(["","Costos",-r.costos]); aoa.push(["","Saldo calculado",r.saldoCalc]);
+  if(d.real!=null){ aoa.push(["","Saldo real",d.real]); aoa.push(["","Retiro a banco",r.retiro]); aoa.push(["","Diferencia (check)",0]); }
+  const ws=XLSX.utils.aoa_to_sheet(aoa); ws["!cols"]=[{wch:22},{wch:36},{wch:13},{wch:14}];
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Conciliacion");
+  XLSX.writeFile(wb,"conciliacion_"+(d.fecha||"").replace(/\//g,"-")+".xlsx");
+};
+
+/* ===== historial / diccionario / estado ===== */
+function renderHist(){
+  const tb=$("histTable").querySelector("tbody");
+  $("histEmpty").style.display=LEDGER.length?"none":"block";
+  tb.innerHTML=LEDGER.map((d,i)=>`<tr><td>${d.fecha}</td><td class="num">${fmt(d.ini)}</td><td class="num">${fmt(d.cobros)}</td>
+    <td class="num">-${fmt(d.costos)}</td><td class="num">${fmt(d.saldoCalc)}</td><td class="num">${fmt(d.retiro)}</td>
+    <td class="num">${fmt(d.real)}</td><td><span class="del" data-i="${i}">borrar</span></td></tr>`).join("");
+  tb.querySelectorAll(".del").forEach(x=>x.onclick=()=>{ LEDGER.splice(+x.dataset.i,1);
+    localStorage.setItem(LS_LEDGER,JSON.stringify(LEDGER)); renderHist(); renderStatus(); });
+}
+function renderDict(){
+  const tb=$("dictTable").querySelector("tbody");
+  tb.innerHTML=Object.entries(DICT).map(([k,v])=>`<tr><td style="font-family:var(--mono);font-size:12.5px">${k}</td><td>${v}</td>
+    <td>${SEED_DICT[k]?'<span style="color:var(--muted);font-size:11px">base</span>':`<span class="del" data-k="${k}">quitar</span>`}</td></tr>`).join("");
+  tb.querySelectorAll(".del").forEach(x=>x.onclick=()=>{ delete DICT[x.dataset.k];
+    localStorage.setItem(LS_DICT,JSON.stringify(diffDict())); DICT=Object.assign({},SEED_DICT,JSON.parse(localStorage.getItem(LS_DICT)||"{}")); renderDict(); recompute(); });
+}
+function renderStatus(){ const last=LEDGER[LEDGER.length-1];
+  $("ledgerStatus").innerHTML=last?`Último cierre: <b>${last.fecha}</b> · saldo calc. <b>${fmt(last.saldoCalc)}</b>`:"Sin días guardados"; }
+function toast(t){ const el=$("toast"); el.textContent=t; el.classList.add("show"); setTimeout(()=>el.classList.remove("show"),1800); }
+
+renderHist(); renderDict(); renderStatus();
+</script>
+</body>
+</html>

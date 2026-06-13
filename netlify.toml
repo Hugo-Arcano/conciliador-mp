@@ -1,0 +1,3 @@
+# Conciliador MercadoPago — sitio estático, sin build
+[build]
+  publish = "."
