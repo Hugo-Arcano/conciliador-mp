@@ -99,6 +99,12 @@
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
   .section-title{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:700;margin:34px 0 12px}
   .del{color:var(--danger);cursor:pointer;font-size:12px}
+  .vchip{font-size:12.5px;font-weight:600;padding:5px 11px;border-radius:20px;font-family:var(--mono)}
+  .vchip.ok{background:#E7F4EE;color:var(--ok)} .vchip.bad{background:#FBEAE7;color:var(--danger)} .vchip.muted{background:#EEF0F3;color:var(--muted)}
+  .vbox{border-radius:9px;padding:12px 14px;font-size:13px}
+  .vbox.bad{background:#FBEAE7;border:1px solid #F0C9C2} .vbox.ok{background:#E7F4EE;border:1px solid #BFE3D3} .vbox.warn{background:var(--warn-soft);border:1px solid #EBD7A8}
+  .vtab{width:100%;margin-top:8px} .vtab td{padding:4px 6px;border-bottom:1px solid rgba(0,0,0,.06);font-size:13px}
+  .vtab td.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums} .vtab tr.tot td{font-weight:700;border-top:1px solid rgba(0,0,0,.18);border-bottom:none}
 </style>
 </head>
 <body>
@@ -179,6 +185,21 @@
     </div>
   </div>
 
+  <div class="card" id="verifCard" style="display:none">
+    <h2>3 · Verificar facturación en Zeta</h2>
+    <p style="font-size:13px;color:var(--muted);margin:0 0 12px">
+      Exportá la grilla <b>Conciliar Cuenta Bancaria</b> de Zeta a Excel (botón "Excel") y cargala acá.
+      Cruza los cobros de MercadoPago del día <b id="verifDay">—</b> contra lo cargado en Zeta y te dice cuáles
+      <b>marcar VERDE</b> (ya están) y cuáles dejar <b>sin color</b> (faltan).
+    </p>
+    <div class="drop" id="dropZeta" style="padding:18px 16px">
+      <div class="big">Arrastrá el Excel de Zeta</div>
+      <div class="sub">o hacé clic · grilla "Conciliar Cuenta Bancaria"</div>
+      <input type="file" id="zetaInput" accept=".xlsx,.xls,.csv" hidden>
+    </div>
+    <div id="verifResult" style="margin-top:14px"></div>
+  </div>
+
   <div class="section-title">Historial de cierres</div>
   <div class="card" style="padding:0">
     <table id="histTable"><thead><tr>
@@ -205,7 +226,7 @@ const SEED_DICT={
   "movimiento general":"costo","costo por intereses absorbidos":"costo","costo de mercado pago":"costo",
   "reduccion impuesto al valor":"costo","costo por ofrecer cuotas":"costo","cargo por venta":"costo",
   "bonificacion por envio":"costo","ingreso de dinero":"neutro","pago":"neutro",
-  "retiro de dinero":"retiro","transferencia":"retiro"
+  "devolucion de cobro":"ingreso","retiro de dinero":"retiro","transferencia":"retiro"
 };
 const LS_DICT="mp_dict_v1", LS_LEDGER="mp_ledger_v1";
 let DICT=Object.assign({},SEED_DICT,JSON.parse(localStorage.getItem(LS_DICT)||"{}"));
@@ -281,6 +302,7 @@ function recompute(){
   else { badge.className="badge ok"; badge.textContent="cuadra"; cb.style.display="flex"; cb.className="check ok"; $("checkVal").textContent="0,00 \u2713"; }
   // zeta
   $("zetaCard").style.display="block";
+  $("verifCard").style.display="block"; $("verifDay").textContent=d.fecha||"—"; runVerif();
   $("zIn").textContent="$ "+fmt(r.cobros);
   $("zOut").textContent="$ "+fmt(r.costos);
   $("zMvRow").style.display=(d.real!=null && Math.abs(r.retiro)>=0.005)?"flex":"none";
@@ -413,6 +435,80 @@ function renderDict(){
 function renderStatus(){ const last=LEDGER[LEDGER.length-1];
   $("ledgerStatus").innerHTML=last?`Último cierre: <b>${last.fecha}</b> · saldo calc. <b>${fmt(last.saldoCalc)}</b>`:"Sin días guardados"; }
 function toast(t){ const el=$("toast"); el.textContent=t; el.classList.add("show"); setTimeout(()=>el.classList.remove("show"),1800); }
+
+/* ===== Paso 3: verificación de facturación en Zeta ===== */
+let ZETA=null;
+function fechaKey(s){
+  if(typeof s==="number"){ const d=new Date(Math.round((s-25569)*86400000));
+    return d.getUTCFullYear()+"-"+String(d.getUTCMonth()+1).padStart(2,"0")+"-"+String(d.getUTCDate()).padStart(2,"0"); }
+  s=String(s||"").trim();
+  let iso=s.match(/(\d{4})-(\d{2})-(\d{2})/); if(iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  let m=s.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if(!m) return null; let [,dd,mm,yy]=m; if(yy.length===2) yy="20"+yy;
+  return `${yy}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}`; }
+function parseZetaWS(ws){
+  const a=XLSX.utils.sheet_to_json(ws,{header:1,raw:true});
+  let hi=a.findIndex(r=>r.some(c=>/comprobante|descrip|total|importe/i.test(String(c||""))));
+  if(hi<0) hi=a.findIndex(r=>r.some(c=>typeof c==="string"&&c.trim())); if(hi<0) hi=0;
+  const head=a[hi].map(c=>String(c||""));
+  const find=re=>head.findIndex(h=>re.test(h));
+  const ci={ total:find(/^total|importe|monto/i), comp:find(/comprobante|tipo|movimiento/i),
+    desc:find(/descrip|concepto|serie/i), fecha:find(/fecha/i) };
+  if(ci.total<0) ci.total=head.length-1;
+  const out=[];
+  for(let i=hi+1;i<a.length;i++){ const r=a[i]; const t=parseNum(r[ci.total]); if(t==null||t<=0) continue;
+    const comp = ci.comp>=0?String(r[ci.comp]||""):""; const desc = ci.desc>=0?String(r[ci.desc]||""):"";
+    if(/egreso|recibo de pago/i.test(comp+" "+desc)) continue;   // solo ingresos
+    out.push({cents:Math.round(t*100), desc:(desc||comp).trim(), fk: ci.fecha>=0?fechaKey(r[ci.fecha]):null }); }
+  return out;
+}
+function handleZeta(file){ const fr=new FileReader();
+  fr.onload=ev=>{ try{ const wb=quietRead(ev.target.result); ZETA=parseZetaWS(wb.Sheets[wb.SheetNames[0]]);
+    toast("Zeta cargado: "+ZETA.length+" ingresos"); runVerif(); }
+    catch(err){ alert("No pude leer el Excel de Zeta: "+err.message); } };
+  fr.readAsArrayBuffer(file); }
+(function(){ const dz=$("dropZeta"); if(!dz)return;
+  dz.onclick=()=>$("zetaInput").click();
+  $("zetaInput").onchange=e=>{ if(e.target.files[0]) handleZeta(e.target.files[0]); };
+  ["dragover","dragenter"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add("over");}));
+  ["dragleave","drop"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove("over");}));
+  dz.addEventListener("drop",e=>{ if(e.dataTransfer.files[0]) handleZeta(e.dataTransfer.files[0]); });
+})();
+function runVerif(){
+  const box=$("verifResult"); if(!box) return;
+  if(!ZETA || !DAYS.length){ box.innerHTML=""; return; }
+  const d=DAYS[SEL];
+  const cobros=d.rows.filter(m=>classify(m.tipo)==="ingreso" && m.importe>0)
+    .map(m=>({cents:Math.round(m.importe*100), importe:m.importe, hora:String(m.fecha).slice(11,16)}));
+  // filtrar Zeta por día si hay fecha; si no, usar todo
+  let Z=ZETA.filter(z=>!z.fk || z.fk===d.key); if(!Z.length) Z=ZETA;
+  const zpool=Z.map(z=>z.cents);
+  const facturadas=[], faltantes=[];
+  for(const c of cobros){ const i=zpool.indexOf(c.cents); if(i>=0){ facturadas.push(c); zpool.splice(i,1); } else faltantes.push(c); }
+  const sobr=zpool.map(c=>c/100);
+  const totFalt=faltantes.reduce((s,c)=>s+c.importe,0), totFact=facturadas.reduce((s,c)=>s+c.importe,0);
+  let html=`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+    <span class="vchip ok">${facturadas.length} en Zeta (verde)</span>
+    <span class="vchip ${faltantes.length?'bad':'ok'}">${faltantes.length} sin color</span>
+    <span class="vchip muted">${cobros.length} cobros del día</span></div>`;
+  html+=`<div class="vbox ok"><b>\u2713 Están en Zeta — marcá VERDE:</b>`;
+  html+= facturadas.length
+    ? `<table class="vtab"><tbody>`+facturadas.map(c=>`<tr><td>${c.hora||''}</td><td class="num">$ ${fmt(c.importe)}</td></tr>`).join("")+
+      `<tr class="tot"><td>Total</td><td class="num">$ ${fmt(+totFact.toFixed(2))}</td></tr></tbody></table>`
+    : `<div style="margin-top:6px;color:var(--muted)">Ningún cobro coincide con Zeta todavía.</div>`;
+  html+=`</div>`;
+  html+=`<div class="vbox bad" style="margin-top:10px"><b>Faltan en Zeta — dejá SIN COLOR:</b>`;
+  html+= faltantes.length
+    ? `<table class="vtab"><tbody>`+faltantes.map(c=>`<tr><td>${c.hora||''}</td><td class="num">$ ${fmt(c.importe)}</td></tr>`).join("")+
+      `<tr class="tot"><td>Total faltante</td><td class="num">$ ${fmt(+totFalt.toFixed(2))}</td></tr></tbody></table>`
+    : `<div style="margin-top:6px;color:var(--ok)">\u2713 Todos los cobros del día ya están en Zeta.</div>`;
+  html+=`</div>`;
+  if(sobr.length){
+    html+=`<div class="vbox warn" style="margin-top:10px"><b>En Zeta sin cobro que coincida (revisar):</b> `+
+      sobr.map(v=>"$ "+fmt(v)).join(" · ")+`</div>`;
+  }
+  box.innerHTML=html;
+}
 
 renderHist(); renderDict(); renderStatus();
 </script>
