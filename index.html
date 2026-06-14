@@ -472,29 +472,39 @@ function syncFields(){
 
 /* ===== carga de archivos (múltiples) ===== */
 function handleFiles(files){
-  const arr=[...files]; let pend=arr.length, all=[], names=[]; let autoIni=null, autoReal={}, xlsByDate={};
+  const arr=[...files]; let pend=arr.length; const items=[];
   if(!pend)return;
-  arr.forEach(file=>{
+  arr.forEach((file,idx)=>{
     const fr=new FileReader();
     fr.onload=e=>{
-      try{ const wb=quietRead(e.target.result); const ws=wb.Sheets[wb.SheetNames[0]]; const nm=norm(file.name);
-        if(/inicial/.test(nm)){ // define el saldo inicial (no se concilia como día)
-          const s=extractSaldos(ws);
-          if(s&&s.ultimo!=null){ autoIni=s.ultimo; names.push(file.name+" → saldo inicial "+fmt(autoIni)); }
-          else names.push(file.name+" (sin saldo legible)");
-        } else {
-          const rows=parseRows(ws); all=all.concat(rows);
-          const s=extractSaldos(ws);
-          const last=rows.length?String(rows[rows.length-1].fecha).slice(0,10):null;
-          if(s && last) xlsByDate[last]=s;
-          if(/real/.test(nm) && s && s.real!=null && last){ autoReal[last]=s.real; names.push(file.name+" ("+rows.length+") → saldo real "+fmt(s.real)); }
-          else names.push(file.name+" ("+rows.length+")");
-        }
-      } catch(err){ alert("Error en "+file.name+": "+err.message); }
-      if(--pend===0) buildDays(all,names,autoIni,autoReal,xlsByDate);
+      try{ const wb=quietRead(e.target.result); const ws=wb.Sheets[wb.SheetNames[0]];
+        const rows=parseRows(ws); const xls=extractSaldos(ws);
+        const ds=rows.map(m=>String(m.fecha).slice(0,10)).filter(Boolean).sort();
+        items[idx]={name:file.name, nm:norm(file.name), rows, xls, dateMin:ds[0]||null, dateMax:ds[ds.length-1]||null};
+      } catch(err){ items[idx]={error:err.message, name:file.name}; alert("Error en "+file.name+": "+err.message); }
+      if(--pend===0) assembleDays(items);
     };
     fr.readAsArrayBuffer(file);
   });
+}
+/* Decide roles: por nombre (saldo_inicial / saldo_real) y, si no hay nombres, por fecha
+   (el más viejo = inicial; el resto = días a conciliar, cada uno con su saldo real). */
+function assembleDays(items){
+  items=items.filter(it=>it && !it.error);
+  if(!items.length) return;
+  // archivo "inicial": por nombre; si no y hay más de uno, el de fecha más antigua
+  let iniIdx=items.findIndex(it=>/inicial/.test(it.nm));
+  if(iniIdx<0 && items.length>1){ let b=0; for(let i=1;i<items.length;i++){ if((items[i].dateMin||"\uffff")<(items[b].dateMin||"\uffff")) b=i; } iniIdx=b; }
+  let autoIni=null;
+  if(iniIdx>=0 && items[iniIdx].xls && items[iniIdx].xls.ultimo!=null) autoIni=items[iniIdx].xls.ultimo; // último nº de la columna D
+  let all=[], names=[], autoReal={}, xlsByDate={};
+  items.forEach((it,i)=>{
+    if(i===iniIdx){ names.push(it.name+" → saldo inicial"+(autoIni!=null?(" "+fmt(autoIni)):"")); return; }
+    all=all.concat(it.rows);
+    if(it.dateMax && it.xls){ xlsByDate[it.dateMax]=it.xls; if(it.xls.real!=null) autoReal[it.dateMax]=it.xls.real; }
+    names.push(it.name+" ("+it.rows.length+")"+(it.xls&&it.xls.real!=null?(" → real "+fmt(it.xls.real)):""));
+  });
+  buildDays(all,names,autoIni,autoReal,xlsByDate);
 }
 function buildDays(rows,names,autoIni,autoReal,xlsByDate){
   autoReal=autoReal||{}; xlsByDate=xlsByDate||{};
