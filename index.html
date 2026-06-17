@@ -188,12 +188,12 @@
       <div class="field">
         <label for="ini" id="iniLabel">Saldo inicial</label>
         <input id="ini" type="text" inputmode="decimal" placeholder="0,00">
-        <div class="hint" id="iniHint">Solo del día más antiguo. Los demás se encadenan solos.</div>
+        <div class="hint" id="iniHint">Se toma de la apertura del archivo (cierre del bloque anterior).</div>
       </div>
       <div class="field">
-        <label for="real" id="realLabel">Saldo real de MercadoPago</label>
+        <label for="real" id="realLabel">Saldo facturado (Zeta)</label>
         <input id="real" type="text" inputmode="decimal" placeholder="0,00">
-        <div class="hint" id="realHint">El saldo que muestra MP ese día. Define el retiro y el cuadre.</div>
+        <div class="hint" id="realHint">Tu saldo en Zeta/local (lo facturado). Calculado − facturado = cobros sin facturar.</div>
       </div>
     </div>
 
@@ -220,8 +220,12 @@
           <div style="display:flex;gap:8px;align-items:center"><button class="copybtn" data-copy="zIn">copiar</button><span class="amt" id="zIn">—</span></div>
         </div>
         <div class="z-row out">
-          <div class="meta">Egreso Bancario <b>52-EgresoBanc</b> — cuenta <b>MERCADO PAGO - $ - MP</b><br>Total de costos, comisiones y retenciones</div>
+          <div class="meta">Egreso Bancario <b>52-EgresoBanc</b> — cuenta <b>MERCADO PAGO - $ - MP</b><br>Costos, comisiones y retenciones (sin Pago ni Retiro)</div>
           <div style="display:flex;gap:8px;align-items:center"><button class="copybtn" data-copy="zOut">copiar</button><span class="amt" id="zOut">—</span></div>
+        </div>
+        <div class="z-row mv" id="zPagoRow" style="display:none">
+          <div class="meta">Pago<br>Movimiento a conciliar aparte en Zeta (no es costo)</div>
+          <div style="display:flex;gap:8px;align-items:center"><button class="copybtn" data-copy="zPago">copiar</button><span class="amt" id="zPago">—</span></div>
         </div>
         <div class="z-row mv" id="zMvRow">
           <div class="meta">Retiro de dinero<br>Movimiento a conciliar en Zeta (si corresponde)</div>
@@ -264,7 +268,7 @@
   <div class="card" style="padding:0">
     <table id="histTable"><thead><tr>
       <th>Fecha</th><th class="num">Saldo inicial</th><th class="num">Cobros</th><th class="num">Costos</th>
-      <th class="num">Saldo calculado</th><th class="num">Retiro</th><th class="num">Saldo real</th><th></th>
+      <th class="num">Saldo calculado</th><th class="num">Sin facturar</th><th class="num">Saldo facturado</th><th></th>
     </tr></thead><tbody></tbody></table>
     <div class="empty" id="histEmpty">Todavía no guardaste ningún día.</div>
   </div>
@@ -273,7 +277,7 @@
     <div class="det-body">
       <table id="dictTable"><thead><tr><th>Tipo (empieza con)</th><th>Categoría</th><th></th></tr></thead><tbody></tbody></table>
       <div class="hint" style="margin-top:8px;color:var(--muted);font-size:12px">
-        ingreso = suma a Cobros · costo = suma a Egreso · neutro = se ignora (ej. Ingreso de dinero + Pago) · retiro = transferencia a banco
+        ingreso = Cobros · costo = Recibo de Pago · pago = se concilia aparte · retiro = transferencia a banco. Por defecto todo lo que no es cobro/retiro/pago cuenta como costo.
       </div>
     </div>
   </details>
@@ -281,15 +285,16 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const SEED_DICT={
-  "cobro":"ingreso","retencion de impuesto":"costo","comision por venta de mercado":"costo",
-  "movimiento general":"costo","costo por intereses absorbidos":"costo","costo de mercado pago":"costo",
-  "reduccion impuesto al valor":"costo","costo por ofrecer cuotas":"costo","cargo por venta":"costo",
-  "bonificacion por envio":"costo","ingreso de dinero":"neutro","pago":"neutro",
-  "anulacion de costo de mercado pago":"costo","anulacion de retencion de impuesto":"costo",
-  "devolucion de cobro":"ingreso","retiro de dinero":"retiro","transferencia":"retiro"
-};
-const LS_DICT="mp_dict_v1", LS_LEDGER="mp_ledger_v1";
+const SEED_DICT={}; // las reglas cubren todo; el diccionario son overrides exactos del operador
+/* Tipos ya conocidos (para avisar de los NUEVOS; todos cuentan como costo salvo cobro/retiro/pago) */
+const KNOWN_TYPES=["cobro","devolucion de cobro","retiro de dinero","transferencia","pago",
+  "pago con descuento recibido","retencion de impuesto","comision por venta",
+  "movimiento general","costo por intereses","costo de mercado pago","reduccion impuesto",
+  "costo por ofrecer cuotas","cargo por venta","bonificacion por envio","ingreso de dinero",
+  "ingreso de dinero excepcional","anulacion de costo de mercado pago",
+  "anulacion de retencion de impuesto","descuento a tu contraparte"];
+const esNuevo=t=>{ t=norm(t); return !KNOWN_TYPES.some(k=>t.startsWith(k)); };
+const LS_DICT="mp_dict_v2", LS_LEDGER="mp_ledger_v1";
 let DICT=Object.assign({},SEED_DICT,JSON.parse(localStorage.getItem(LS_DICT)||"{}"));
 let LEDGER=JSON.parse(localStorage.getItem(LS_LEDGER)||"[]");
 let DAYS=[];        // [{key,fecha,rows,real,start,close,result}]
@@ -300,7 +305,14 @@ const norm=s=>(s||"").toString().toLowerCase().normalize("NFD").replace(/[\u0300
 const fmt=n=>(n==null||isNaN(n))?"—":n.toLocaleString("es-UY",{minimumFractionDigits:2,maximumFractionDigits:2});
 const parseNum=s=>{ if(s==null)return null; s=String(s).trim(); if(!s)return null;
   if(s.includes(",")) s=s.replace(/\./g,"").replace(",","."); const n=parseFloat(s); return isNaN(n)?null:n; };
-function classify(t){ t=norm(t); for(const k in DICT) if(t.startsWith(k)) return DICT[k]; return "desconocido"; }
+function classify(t){ t=norm(t);
+  if(DICT[t]) return DICT[t];                                   // override exacto del operador
+  if(t.startsWith("cobro")) return "ingreso";                   // incluye "cobro por descuento a tu contraparte"
+  if(t.startsWith("devolucion de cobro")) return "ingreso";
+  if(t.startsWith("retiro de dinero")||t.startsWith("transferencia")) return "retiro";
+  if(t==="pago") return "pago";                                 // SOLO el exacto, no "pago con descuento recibido"
+  return "costo";                                               // todo lo demás
+}
 function diffDict(){ const d={}; for(const k in DICT) if(SEED_DICT[k]!==DICT[k]) d[k]=DICT[k]; return d; }
 
 /* Lectura silenciando el aviso "Bad uncompressed size" de SheetJS (cosmético, no pierde datos) */
@@ -340,62 +352,67 @@ function extractSaldos(ws){
   return {apertura, ultimo, cobrosXls, calculado, real, retiroXls, costosXls};
 }
 function reconcile(rows,ini,real){
-  let cobros=0,costos=0,neto=0; const unknown={}, byType={};
+  let cobros=0,costos=0,pago=0,retiroMov=0,neto=0; const nuevos={}, byType={};
   for(const m of rows){ const c=classify(m.tipo); neto+=m.importe;
     if(c==="ingreso")cobros+=m.importe;
-    else if(c==="costo"){costos+=m.importe;byType[m.tipo]=(byType[m.tipo]||0)+m.importe;}
-    else if(c==="desconocido")unknown[m.tipo]=1; }
+    else if(c==="retiro")retiroMov+=m.importe;
+    else if(c==="pago")pago+=m.importe;
+    else {costos+=m.importe;byType[m.tipo]=(byType[m.tipo]||0)+m.importe;}   // costo = default
+    if(esNuevo(m.tipo)) nuevos[m.tipo]=1; }
   const saldoCalc=+(ini+neto).toFixed(2);
-  const retiro=(real!=null)?+(real-saldoCalc).toFixed(2):null;
-  return {cobros:+cobros.toFixed(2),costos:+Math.abs(costos).toFixed(2),neto:+neto.toFixed(2),
-    saldoCalc,retiro,byType,unknown:Object.keys(unknown),hasUnknown:Object.keys(unknown).length>0};
+  const sinFacturar=(real!=null)?+(saldoCalc-real).toFixed(2):null;          // calculado − real = cobros sin facturar
+  return {cobros:+cobros.toFixed(2),costos:+Math.abs(costos).toFixed(2),
+    pago:+Math.abs(pago).toFixed(2),retiroMov:+Math.abs(retiroMov).toFixed(2),
+    neto:+neto.toFixed(2),saldoCalc,sinFacturar,byType,
+    nuevos:Object.keys(nuevos),hasNuevos:Object.keys(nuevos).length>0};
 }
-/* semilla del día más antiguo: campo manual, si no, último cierre del ledger anterior a ese día */
+/* semilla del primer bloque: apertura del archivo > campo manual > último cierre del ledger anterior */
 function seedForFirst(){
+  const x0=DAYS[0]&&DAYS[0].xls; if(x0&&x0.apertura!=null) return x0.apertura;
   const manual=parseNum($("ini").value); if(manual!=null) return manual;
   if(DAYS.length){ const k=DAYS[0].key; const prev=LEDGER.filter(x=>x.key<k).pop(); if(prev) return prev.saldoCalc; }
   return 0;
 }
 function chain(){
-  const seed=seedForFirst();
-  DAYS.forEach((d,i)=>{ d.start=(i===0)?seed:DAYS[i-1].close; d.result=reconcile(d.rows,d.start,d.real); d.close=d.result.saldoCalc; });
+  DAYS.forEach((d,i)=>{
+    const ap=(d.startManual!=null)?d.startManual
+           :((d.xls&&d.xls.apertura!=null)?d.xls.apertura:null);   // override manual > apertura del archivo
+    d.start = ap!=null ? ap : (i===0?seedForFirst():DAYS[i-1].close);
+    d.result=reconcile(d.rows,d.start,d.real); d.close=d.result.saldoCalc;
+  });
 }
 
 /* ===== control de incongruencias ===== */
 function buildChecks(d,r){
   const out=[], x=d.xls, real=d.real;
-  const eq=(a,b)=>a!=null&&b!=null&&Math.abs(a-b)<0.005;
+  const eq=(a,b)=>a!=null&&b!=null&&Math.abs(a-b)<0.01;
   const dif=(a,b)=>fmt(+(a-b).toFixed(2));
-  if(r.hasUnknown) out.push({lvl:"warn",msg:"Tipos sin clasificar: "+r.unknown.join(", ")+". Clasificalos abajo (queda recordado)."});
+  if(r.hasNuevos) out.push({lvl:"info",msg:"Tipos nuevos (contados como costo): "+r.nuevos.join(", ")+". Si alguno NO es costo, reclasificalo abajo."});
   if(x){
     if(x.apertura!=null){
       if(eq(d.start,x.apertura)) out.push({lvl:"ok",msg:"Encadenamiento OK: el saldo inicial coincide con la apertura del archivo."});
-      else out.push({lvl:"err",msg:`Encadenamiento: el saldo inicial usado (${fmt(d.start)}) no coincide con la apertura del archivo (${fmt(x.apertura)}). Diferencia ${dif(d.start,x.apertura)}. ¿Archivo equivocado o días no consecutivos?`});
+      else out.push({lvl:"err",msg:`Encadenamiento: saldo inicial ${fmt(d.start)} ≠ apertura del archivo ${fmt(x.apertura)} (dif ${dif(d.start,x.apertura)}). ¿Archivo equivocado o salteaste un cierre?`});
     }
     if(x.apertura!=null && x.ultimo!=null){
       const calc=+(x.apertura+r.neto).toFixed(2);
       if(eq(calc,x.ultimo)) out.push({lvl:"ok",msg:"La columna de saldo del Excel cierra con los movimientos."});
-      else out.push({lvl:"err",msg:`Columna de saldo: el Excel marca ${fmt(x.ultimo)} pero la suma de movimientos da ${fmt(calc)}. Diferencia ${dif(calc,x.ultimo)}. ¿Fila editada, borrada o duplicada?`});
+      else out.push({lvl:"err",msg:`Columna de saldo: el Excel marca ${fmt(x.ultimo)} pero los movimientos dan ${fmt(calc)} (dif ${dif(calc,x.ultimo)}). ¿Fila editada o borrada?`});
     }
     if(x.cobrosXls!=null){
       if(eq(x.cobrosXls,r.cobros)) out.push({lvl:"ok",msg:"Total de cobros coincide con el Excel."});
-      else out.push({lvl:"err",msg:`Cobros: el Excel marca ${fmt(x.cobrosXls)} pero la suma real es ${fmt(r.cobros)}. Diferencia ${dif(x.cobrosXls,r.cobros)}.`});
+      else out.push({lvl:"err",msg:`Cobros: el Excel marca ${fmt(x.cobrosXls)} pero la app suma ${fmt(r.cobros)} (dif ${dif(x.cobrosXls,r.cobros)}).`});
     }
-    if(x.costosXls!=null){
-      if(eq(x.costosXls,r.costos)) out.push({lvl:"ok",msg:"Total de costos coincide con el Excel."});
-      else out.push({lvl:"err",msg:`Costos: el Excel marca ${fmt(x.costosXls)} pero la suma real es ${fmt(r.costos)}. Diferencia ${dif(x.costosXls,r.costos)}.`});
-    }
-    if(x.retiroXls!=null && real!=null){
-      if(eq(x.retiroXls,r.retiro)) out.push({lvl:"ok",msg:"El retiro coincide con el Excel."});
-      else out.push({lvl:"err",msg:`Retiro: el Excel marca ${fmt(x.retiroXls)} pero el calculado es ${fmt(r.retiro)}. Diferencia ${dif(x.retiroXls,r.retiro)}.`});
-    }
-  } else {
-    out.push({lvl:"info",msg:"Archivo sin columna de saldo: no puedo cruzar contra el Excel, solo calculo desde los movimientos."});
-  }
+  } else out.push({lvl:"info",msg:"Archivo sin columna de saldo: calculo solo desde los movimientos."});
+  if(r.pago>0.005) out.push({lvl:"info",msg:`Pago de ${fmt(r.pago)}: va aparte en conciliación, NO entra al Recibo de Pago.`});
+  if(r.retiroMov>0.005) out.push({lvl:"info",msg:`Retiro de dinero de ${fmt(r.retiroMov)}: conciliá ese movimiento en Zeta.`});
   if(real!=null){
-    if(Math.abs(r.retiro)<0.005) out.push({lvl:"ok",msg:"Cuadra exacto: el calculado es igual al real, sin retiro."});
-    else out.push({lvl:"warn",msg:`Diferencia entre calculado y real: ${fmt(r.retiro)}. Si es transferencia a banco, registrala como "Retiro de dinero" en Zeta; si no esperabas un retiro, revisá el saldo real.`});
-  } else out.push({lvl:"info",msg:"Falta el saldo real para validar el día."});
+    if(Math.abs(r.sinFacturar)<0.01) out.push({lvl:"ok",msg:"No quedan cobros sin facturar: el calculado es igual al facturado."});
+    else if(r.sinFacturar>0) out.push({lvl:"warn",msg:`Cobros sin facturar: ${fmt(r.sinFacturar)}. Plata que entró a MP y todavía no está en Zeta (revisalos en el Paso 3).`});
+    else out.push({lvl:"err",msg:`El saldo facturado (${fmt(real)}) es MAYOR que el calculado (${fmt(r.saldoCalc)}) por ${fmt(-r.sinFacturar)}. Revisá: ¿facturaste de más o está mal el saldo facturado?`});
+    if(ZETA){ const sc=sinColorTotal(d); if(sc!=null){
+      if(eq(sc,r.sinFacturar)) out.push({lvl:"ok",msg:`Cruce con Zeta OK: los cobros sin facturar (${fmt(r.sinFacturar)}) coinciden con los "sin color" del Paso 3.`});
+      else out.push({lvl:"warn",msg:`Cruce con Zeta: cobros sin facturar ${fmt(r.sinFacturar)} ≠ suma "sin color" del Paso 3 ${fmt(sc)} (dif ${dif(r.sinFacturar,sc)}). Revisá clasificación o el saldo facturado cargado.`}); } }
+  } else out.push({lvl:"info",msg:"Falta el saldo facturado (Zeta) para validar los cobros sin facturar."});
   return out;
 }
 function renderControls(checks){
@@ -409,65 +426,77 @@ function recompute(){
   const d=DAYS[SEL], r=d.result;
   // waterfall
   const W=[["Saldo inicial",fmt(d.start),""],
-    ["(+) Cobros del día",fmt(r.cobros),"add"],
-    ["(–) Costos / comisiones / retenciones","-"+fmt(r.costos),"sub"],
-    ["= Saldo calculado",fmt(r.saldoCalc),"total"]];
-  if(d.real!=null){ W.push(["(–) Retiro de dinero",(r.retiro<0?"":"+")+fmt(r.retiro),"sub"]);
-    W.push(["= Saldo final calculado",fmt(+(r.saldoCalc+r.retiro).toFixed(2)),"total"]);
-    W.push(["Saldo real MercadoPago",fmt(d.real),"real"]); }
+    ["(+) Cobros","+"+fmt(r.cobros),"add"],
+    ["(–) Recibo de Pago (costos/comisiones)","-"+fmt(r.costos),"sub"]];
+  if(r.pago>0.005) W.push(["(–) Pago (conciliar aparte)","-"+fmt(r.pago),"sub"]);
+  if(r.retiroMov>0.005) W.push(["(–) Retiro de dinero","-"+fmt(r.retiroMov),"sub"]);
+  W.push(["= Saldo calculado (saldo en MP)",fmt(r.saldoCalc),"total"]);
+  if(d.real!=null){
+    W.push(["(–) Cobros sin facturar","-"+fmt(r.sinFacturar),"sub"]);
+    W.push(["= Saldo facturado (Zeta)",fmt(d.real),"real"]); }
   $("waterfall").innerHTML=W.map(([l,v,c])=>`<div class="row ${c}"><span class="lbl">${l}</span><span class="val">${v}</span></div>`).join("");
   $("rpDate").textContent=d.fecha||"—";
   const badge=$("rpBadge"),cb=$("checkBox"); cb.style.display="none";
   const checks=buildChecks(d,r); renderControls(checks);
   const hasErr=checks.some(c=>c.lvl==="err");
-  if(d.real==null && !d.xls){ badge.className="badge idle"; badge.textContent="falta saldo real"; }
+  if(d.real==null && !d.xls){ badge.className="badge idle"; badge.textContent="falta saldo facturado"; }
   else if(hasErr){ badge.className="badge err"; badge.textContent="hay diferencias"; }
-  else if(r.hasUnknown){ badge.className="badge warn"; badge.textContent="revisar tipos"; }
-  else if(d.real==null){ badge.className="badge idle"; badge.textContent="falta saldo real"; }
-  else if(Math.abs(r.retiro)>=0.005){ badge.className="badge warn"; badge.textContent="consistente · con retiro"; }
-  else { badge.className="badge ok"; badge.textContent="todo consistente"; }
+  else if(r.hasNuevos){ badge.className="badge warn"; badge.textContent="tipos nuevos"; }
+  else if(d.real==null){ badge.className="badge idle"; badge.textContent="falta saldo facturado"; }
+  else if(Math.abs(r.sinFacturar)>=0.01){ badge.className="badge warn"; badge.textContent="faltan facturar"; }
+  else { badge.className="badge ok"; badge.textContent="todo facturado"; }
   // zeta
   $("zetaCard").style.display="block";
   $("verifCard").style.display="block"; $("verifDay").textContent=d.fecha||"—"; runVerif();
   $("zIn").textContent="$ "+fmt(r.cobros);
   $("zOut").textContent="$ "+fmt(r.costos);
-  $("zMvRow").style.display=(d.real!=null && Math.abs(r.retiro)>=0.005)?"flex":"none";
-  $("zMv").textContent="$ "+fmt(Math.abs(r.retiro||0));
+  $("zMvRow").style.display=(r.retiroMov>0.005)?"flex":"none";
+  $("zMv").textContent="$ "+fmt(r.retiroMov);
+  $("zPagoRow").style.display=(r.pago>0.005)?"flex":"none";
+  $("zPago").textContent="$ "+fmt(r.pago);
   // breakdown
   const bt=Object.entries(r.byType).sort((a,b)=>a[1]-b[1]);
   $("breakdown").querySelector("tbody").innerHTML=bt.length
-    ? bt.map(([t,v])=>`<tr><td>${t}</td><td class="num">${fmt(v)}</td></tr>`).join("")+`<tr><td><b>Total costos</b></td><td class="num"><b>-${fmt(r.costos)}</b></td></tr>`
+    ? bt.map(([t,v])=>`<tr><td>${t}</td><td class="num">${fmt(v)}</td></tr>`).join("")+`<tr><td><b>Total Recibo de Pago</b></td><td class="num"><b>-${fmt(r.costos)}</b></td></tr>`
     : `<tr><td class="empty">Sin costos.</td></tr>`;
-  // unknowns
+  // tipos nuevos
   const ub=$("ukBox"),ul=$("ukList");
-  if(r.hasUnknown){ ub.style.display="block";
-    ul.innerHTML=r.unknown.map(t=>`<div class="uk-item"><span class="t">${t}</span>
-      <select data-uk="${encodeURIComponent(t)}"><option value="">clasificar…</option>
-      <option value="ingreso">Ingreso (cobro)</option><option value="costo">Costo / comisión</option>
-      <option value="neutro">Neutro (ignorar)</option><option value="retiro">Retiro a banco</option></select></div>`).join("");
+  if(r.hasNuevos){ ub.style.display="block";
+    ul.innerHTML=r.nuevos.map(t=>`<div class="uk-item"><span class="t">${t}</span>
+      <select data-uk="${encodeURIComponent(t)}"><option value="">queda como costo…</option>
+      <option value="ingreso">Es cobro (ingreso)</option><option value="costo">Costo / comisión</option>
+      <option value="pago">Pago (conciliar aparte)</option><option value="retiro">Retiro a banco</option></select></div>`).join("");
     ul.querySelectorAll("select").forEach(s=>s.onchange=e=>{ const t=decodeURIComponent(e.target.dataset.uk),cat=e.target.value; if(!cat)return;
-      DICT[norm(t)]=cat; localStorage.setItem(LS_DICT,JSON.stringify(diffDict())); renderDict(); recompute(); toast("Tipo clasificado y recordado"); });
+      DICT[norm(t)]=cat; localStorage.setItem(LS_DICT,JSON.stringify(diffDict())); renderDict(); recompute(); toast("Tipo recordado"); });
   } else ub.style.display="none";
   // botón guardar
   const conReal=DAYS.filter(x=>x.real!=null).length;
-  $("saveBtn").textContent = conReal>1 ? `Guardar ${conReal} días` : "Guardar día";
+  $("saveBtn").textContent = conReal>1 ? `Guardar ${conReal} bloques` : "Guardar bloque";
 }
 
 function renderChips(){
   const c=$("dayChips");
   if(DAYS.length<=1){ c.style.display="none"; return; }
   c.style.display="flex";
-  c.innerHTML=DAYS.map((d,i)=>{ const ok=d.real!=null && !d.result.hasUnknown;
+  c.innerHTML=DAYS.map((d,i)=>{ const ok=d.real!=null && !d.result.hasNuevos;
     const ckcls=d.real==null?"":(ok?"ok":"bad");
     return `<div class="chip ${i===SEL?'active':''}" data-i="${i}"><span class="ck ${ckcls}"></span>${d.fecha}</div>`; }).join("");
   c.querySelectorAll(".chip").forEach(ch=>ch.onclick=()=>{ SEL=+ch.dataset.i; syncFields(); recompute(); });
 }
 function syncFields(){
   const multi=DAYS.length>1, d=DAYS[SEL];
-  $("iniLabel").textContent = multi ? `Saldo inicial (día más antiguo: ${DAYS[0].fecha})` : "Saldo inicial";
-  $("realLabel").textContent = multi ? `Saldo real — día ${d?d.fecha:''}` : "Saldo real de MercadoPago";
-  // saldo real del día seleccionado
+  $("iniLabel").textContent = multi&&d ? `Saldo inicial — bloque ${d.fecha}` : "Saldo inicial";
+  $("realLabel").textContent = multi&&d ? `Saldo facturado (Zeta) — ${d.fecha}` : "Saldo facturado (Zeta)";
+  if(d){
+    $("ini").value = d.start!=null?fmt(d.start):"";
+    $("iniHint").textContent = (d.xls&&d.xls.apertura!=null)
+      ? "Tomado de la apertura del archivo (cierre del bloque anterior)."
+      : "Cargalo a mano o se toma del último cierre guardado.";
+  }
   $("real").value = (d&&d.real!=null)?fmt(d.real):"";
+  $("realHint").textContent = (d&&d.xls&&d.xls.real!=null)
+    ? "Tomado del archivo (saldo facturado). Calculado − facturado = cobros sin facturar."
+    : "Tu saldo en Zeta/local (lo facturado). Calculado − facturado = cobros sin facturar.";
 }
 
 /* ===== carga de archivos (múltiples) ===== */
@@ -487,44 +516,25 @@ function handleFiles(files){
     fr.readAsArrayBuffer(file);
   });
 }
-/* Decide roles: por nombre (saldo_inicial / saldo_real) y, si no hay nombres, por fecha
-   (el más viejo = inicial; el resto = días a conciliar, cada uno con su saldo real). */
+/* Cada archivo = UN bloque (aunque traiga 2+ días juntos). Se ordenan por fecha y se encadenan. */
 function assembleDays(items){
-  items=items.filter(it=>it && !it.error);
-  if(!items.length) return;
-  // archivo "inicial": por nombre; si no y hay más de uno, el de fecha más antigua
-  let iniIdx=items.findIndex(it=>/inicial/.test(it.nm));
-  if(iniIdx<0 && items.length>1){ let b=0; for(let i=1;i<items.length;i++){ if((items[i].dateMin||"\uffff")<(items[b].dateMin||"\uffff")) b=i; } iniIdx=b; }
-  let autoIni=null;
-  if(iniIdx>=0 && items[iniIdx].xls && items[iniIdx].xls.ultimo!=null) autoIni=items[iniIdx].xls.ultimo; // último nº de la columna D
-  let all=[], names=[], autoReal={}, xlsByDate={};
-  items.forEach((it,i)=>{
-    if(i===iniIdx){ names.push(it.name+" → saldo inicial"+(autoIni!=null?(" "+fmt(autoIni)):"")); return; }
-    all=all.concat(it.rows);
-    if(it.dateMax && it.xls){ xlsByDate[it.dateMax]=it.xls; if(it.xls.real!=null) autoReal[it.dateMax]=it.xls.real; }
-    names.push(it.name+" ("+it.rows.length+")"+(it.xls&&it.xls.real!=null?(" → real "+fmt(it.xls.real)):""));
-  });
-  buildDays(all,names,autoIni,autoReal,xlsByDate);
-}
-function buildDays(rows,names,autoIni,autoReal,xlsByDate){
-  autoReal=autoReal||{}; xlsByDate=xlsByDate||{};
-  if(!rows.length){ alert("No encontré movimientos. (¿Subiste solo el archivo de saldo inicial? Falta el de movimientos / saldo_real.)"); return; }
+  items=items.filter(it=>it && !it.error && it.rows && it.rows.length);
+  if(!items.length){ alert("No encontré movimientos en los archivos."); return; }
+  items.sort((a,b)=>String(a.dateMax||"").localeCompare(String(b.dateMax||"")));
   const prevReal={}; DAYS.forEach(d=>{ if(d.real!=null) prevReal[d.key]=d.real; });
-  const map={}; for(const m of rows){ const iso=String(m.fecha).slice(0,10); (map[iso]=map[iso]||[]).push(m); }
-  DAYS=Object.keys(map).sort().map(iso=>({ key:iso, fecha:iso.split("-").reverse().join("/"),
-    rows:map[iso], xls: xlsByDate[iso]||null,
-    real: (iso in autoReal)?autoReal[iso] : (iso in prevReal)?prevReal[iso]:null }));
+  const fl=s=>s?s.split("-").reverse().join("/"):"";
+  DAYS=items.map(it=>{
+    const key=it.dateMax||it.dateMin||it.name;
+    const fecha=(it.dateMin&&it.dateMax&&it.dateMin!==it.dateMax)?(fl(it.dateMin)+"–"+fl(it.dateMax)):fl(key);
+    return { key, fecha, dmin:it.dateMin, dmax:it.dateMax, name:it.name, rows:it.rows, xls:it.xls,
+      real:(it.xls&&it.xls.real!=null)?it.xls.real:(key in prevReal?prevReal[key]:null) };
+  });
   SEL=DAYS.length-1;
   $("fileTag").style.display="block";
-  $("fileTag").textContent="\u2713 "+names.join("\n\u2713 ")+"\n"+DAYS.length+" día(s): "+DAYS.map(d=>d.fecha).join(", ");
-  // saldo inicial: archivo saldo_inicial > apertura del propio archivo del día > ledger
-  const x0=DAYS[0].xls;
-  if(autoIni!=null){ $("ini").value=fmt(autoIni); $("iniHint").textContent="Tomado del archivo saldo_inicial (se cruza con la apertura del día)."; }
-  else if(x0&&x0.apertura!=null){ $("ini").value=fmt(x0.apertura); $("iniHint").textContent="Tomado de la apertura del archivo del día."; }
-  else if(!$("ini").value){ const prev=LEDGER.filter(x=>x.key<DAYS[0].key).pop();
-    if(prev){ $("ini").value=fmt(prev.saldoCalc); $("iniHint").textContent="Tomado de "+prev.fecha+" (último cierre guardado)."; } }
-  if(Object.keys(autoReal).length) $("realHint").textContent="Tomado del archivo saldo_real (real de la fila de totales).";
-  syncFields(); recompute();
+  $("fileTag").textContent="\u2713 "+items.map(it=>it.name+" ("+it.rows.length+" mov.)"
+      +(it.xls&&it.xls.real!=null?(" → facturado "+fmt(it.xls.real)):"")).join("\n\u2713 ")
+    +"\n"+DAYS.length+" bloque(s): "+DAYS.map(d=>d.fecha).join(", ");
+  chain(); syncFields(); recompute();
 }
 const drop=$("drop");
 drop.onclick=()=>$("fileInput").click();
@@ -532,7 +542,7 @@ $("fileInput").onchange=e=>{ if(e.target.files.length) handleFiles(e.target.file
 ["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("over");}));
 ["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("over");}));
 drop.addEventListener("drop",e=>{ if(e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
-$("ini").addEventListener("input",recompute);
+$("ini").addEventListener("input",()=>{ if(DAYS[SEL]) DAYS[SEL].startManual=parseNum($("ini").value); recompute(); });
 $("real").addEventListener("input",()=>{ if(DAYS[SEL]) DAYS[SEL].real=parseNum($("real").value); recompute(); });
 
 /* ===== copiar ===== */
@@ -544,7 +554,8 @@ document.querySelectorAll(".copybtn").forEach(b=>b.onclick=()=>{
 /* ===== guardar (todos los días con saldo real) / exportar ===== */
 function saveRec(d){
   const rec={key:d.key,fecha:d.fecha,ini:d.start,cobros:d.result.cobros,costos:d.result.costos,
-    saldoCalc:d.result.saldoCalc,retiro:d.result.retiro,real:d.real,ts:Date.now()};
+    pago:d.result.pago,retiroMov:d.result.retiroMov,saldoCalc:d.result.saldoCalc,
+    sinFacturar:d.result.sinFacturar,real:d.real,ts:Date.now()};
   const i=LEDGER.findIndex(x=>x.key===rec.key); if(i>=0)LEDGER[i]=rec; else LEDGER.push(rec);
 }
 $("saveBtn").onclick=()=>{
@@ -560,8 +571,11 @@ $("exportBtn").onclick=()=>{
   if(!DAYS.length)return; const d=DAYS[SEL]; let saldo=d.start;
   const aoa=[["Fecha de Pago","Tipo de Operación","Importe","Saldo"]];
   for(const m of d.rows){ saldo=+(saldo+m.importe).toFixed(2); aoa.push([m.fecha,m.tipo,m.importe,saldo]); }
-  const r=d.result; aoa.push([]); aoa.push(["","Cobros",r.cobros]); aoa.push(["","Costos",-r.costos]); aoa.push(["","Saldo calculado",r.saldoCalc]);
-  if(d.real!=null){ aoa.push(["","Saldo real",d.real]); aoa.push(["","Retiro a banco",r.retiro]); aoa.push(["","Diferencia (check)",0]); }
+  const r=d.result; aoa.push([]); aoa.push(["","Cobros",r.cobros]); aoa.push(["","Recibo de Pago (costos)",-r.costos]);
+  if(r.pago>0.005) aoa.push(["","Pago (aparte)",-r.pago]);
+  if(r.retiroMov>0.005) aoa.push(["","Retiro de dinero",-r.retiroMov]);
+  aoa.push(["","Saldo calculado (MP)",r.saldoCalc]);
+  if(d.real!=null){ aoa.push(["","Cobros sin facturar",-r.sinFacturar]); aoa.push(["","Saldo facturado (Zeta)",d.real]); }
   const ws=XLSX.utils.aoa_to_sheet(aoa); ws["!cols"]=[{wch:22},{wch:36},{wch:13},{wch:14}];
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Conciliacion");
   XLSX.writeFile(wb,"conciliacion_"+(d.fecha||"").replace(/\//g,"-")+".xlsx");
@@ -571,9 +585,11 @@ $("exportBtn").onclick=()=>{
 function renderHist(){
   const tb=$("histTable").querySelector("tbody");
   $("histEmpty").style.display=LEDGER.length?"none":"block";
-  tb.innerHTML=LEDGER.map((d,i)=>`<tr><td>${d.fecha}</td><td class="num">${fmt(d.ini)}</td><td class="num">${fmt(d.cobros)}</td>
-    <td class="num">-${fmt(d.costos)}</td><td class="num">${fmt(d.saldoCalc)}</td><td class="num">${fmt(d.retiro)}</td>
-    <td class="num">${fmt(d.real)}</td><td><span class="del" data-i="${i}">borrar</span></td></tr>`).join("");
+  tb.innerHTML=LEDGER.map((d,i)=>{
+    const sf=(d.sinFacturar!=null)?d.sinFacturar:((d.real!=null&&d.saldoCalc!=null)?+(d.saldoCalc-d.real).toFixed(2):null);
+    return `<tr><td>${d.fecha}</td><td class="num">${fmt(d.ini)}</td><td class="num">${fmt(d.cobros)}</td>
+    <td class="num">-${fmt(d.costos)}</td><td class="num">${fmt(d.saldoCalc)}</td><td class="num">${fmt(sf)}</td>
+    <td class="num">${fmt(d.real)}</td><td><span class="del" data-i="${i}">borrar</span></td></tr>`; }).join("");
   tb.querySelectorAll(".del").forEach(x=>x.onclick=()=>{ LEDGER.splice(+x.dataset.i,1);
     localStorage.setItem(LS_LEDGER,JSON.stringify(LEDGER)); renderHist(); renderStatus(); });
 }
@@ -626,38 +642,46 @@ function handleZeta(file){ const fr=new FileReader();
   ["dragleave","drop"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove("over");}));
   dz.addEventListener("drop",e=>{ if(e.dataTransfer.files[0]) handleZeta(e.dataTransfer.files[0]); });
 })();
-function runVerif(){
-  const box=$("verifResult"); if(!box) return;
-  if(!ZETA || !DAYS.length){ box.innerHTML=""; return; }
-  const d=DAYS[SEL];
+function computeVerif(d){
+  if(!ZETA) return null;
   const cobros=d.rows.filter(m=>classify(m.tipo)==="ingreso" && m.importe>0)
     .map(m=>{ const f=String(m.fecha); return {cents:Math.round(m.importe*100), importe:m.importe,
       et:(f.slice(8,10)+"/"+f.slice(5,7)+" "+f.slice(11,16))}; });
   // anular par cobro + devolución del mismo monto (devolución inmediata, no se factura)
   const devs=d.rows.filter(m=>/devoluc/i.test(String(m.tipo)) && m.importe<0).map(m=>Math.round(Math.abs(m.importe)*100));
   for(const dc of devs){ const i=cobros.findIndex(c=>c.cents===dc); if(i>=0) cobros.splice(i,1); }
-  // filtrar Zeta por día si hay fecha; si no, usar todo
-  let Z=ZETA.filter(z=>!z.fk || z.fk===d.key); if(!Z.length) Z=ZETA;
+  // filtrar Zeta por el rango de fechas del bloque (puede tener varios días); si no hay fecha, usar todo
+  const lo=d.dmin||d.key, hi=d.dmax||d.key;
+  let Z=ZETA.filter(z=>!z.fk || (z.fk>=lo && z.fk<=hi)); if(!Z.length) Z=ZETA;
   const zpool=Z.map(z=>z.cents);
   const facturadas=[], faltantes=[];
   for(const c of cobros){ const i=zpool.indexOf(c.cents); if(i>=0){ facturadas.push(c); zpool.splice(i,1); } else faltantes.push(c); }
   const sobr=zpool.map(c=>c/100);
-  const totFalt=faltantes.reduce((s,c)=>s+c.importe,0), totFact=facturadas.reduce((s,c)=>s+c.importe,0);
+  const totFalt=+(faltantes.reduce((s,c)=>s+c.importe,0)).toFixed(2);
+  const totFact=+(facturadas.reduce((s,c)=>s+c.importe,0)).toFixed(2);
+  return {cobros,facturadas,faltantes,sobr,totFalt,totFact};
+}
+function sinColorTotal(d){ const v=computeVerif(d); return v?v.totFalt:null; }
+function runVerif(){
+  const box=$("verifResult"); if(!box) return;
+  const d=DAYS[SEL]; const v=(ZETA&&d)?computeVerif(d):null;
+  if(!v){ box.innerHTML=""; return; }
+  const {facturadas,faltantes,sobr,totFalt,totFact,cobros}=v;
   let html=`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
     <span class="vchip ok">${facturadas.length} en Zeta (verde)</span>
     <span class="vchip ${faltantes.length?'bad':'ok'}">${faltantes.length} sin color</span>
-    <span class="vchip muted">${cobros.length} cobros del día</span></div>`;
+    <span class="vchip muted">${cobros.length} cobros del bloque</span></div>`;
   html+=`<div class="vbox ok"><b>\u2713 Están en Zeta — marcá VERDE:</b>`;
   html+= facturadas.length
     ? `<table class="vtab"><tbody>`+facturadas.map(c=>`<tr><td>${c.et||''}</td><td class="num">$ ${fmt(c.importe)}</td></tr>`).join("")+
-      `<tr class="tot"><td>Total</td><td class="num">$ ${fmt(+totFact.toFixed(2))}</td></tr></tbody></table>`
+      `<tr class="tot"><td>Total</td><td class="num">$ ${fmt(totFact)}</td></tr></tbody></table>`
     : `<div style="margin-top:6px;color:var(--muted)">Ningún cobro coincide con Zeta todavía.</div>`;
   html+=`</div>`;
-  html+=`<div class="vbox bad" style="margin-top:10px"><b>Faltan en Zeta — dejá SIN COLOR:</b>`;
+  html+=`<div class="vbox bad" style="margin-top:10px"><b>Faltan en Zeta — dejá SIN COLOR (= cobros sin facturar):</b>`;
   html+= faltantes.length
     ? `<table class="vtab"><tbody>`+faltantes.map(c=>`<tr><td>${c.et||''}</td><td class="num">$ ${fmt(c.importe)}</td></tr>`).join("")+
-      `<tr class="tot"><td>Total faltante</td><td class="num">$ ${fmt(+totFalt.toFixed(2))}</td></tr></tbody></table>`
-    : `<div style="margin-top:6px;color:var(--ok)">\u2713 Todos los cobros del día ya están en Zeta.</div>`;
+      `<tr class="tot"><td>Total sin facturar</td><td class="num">$ ${fmt(totFalt)}</td></tr></tbody></table>`
+    : `<div style="margin-top:6px;color:var(--ok)">\u2713 Todos los cobros del bloque ya están en Zeta.</div>`;
   html+=`</div>`;
   if(sobr.length){
     html+=`<div class="vbox warn" style="margin-top:10px"><b>En Zeta sin cobro que coincida (revisar):</b> `+
