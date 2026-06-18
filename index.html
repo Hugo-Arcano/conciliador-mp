@@ -644,47 +644,77 @@ function handleZeta(file){ const fr=new FileReader();
 })();
 function computeVerif(d){
   if(!ZETA) return null;
-  const cobros=d.rows.filter(m=>classify(m.tipo)==="ingreso" && m.importe>0)
+  // cobros individuales con su timestamp exacto
+  let indiv=d.rows.filter(m=>classify(m.tipo)==="ingreso" && m.importe>0)
     .map(m=>{ const f=String(m.fecha); return {cents:Math.round(m.importe*100), importe:m.importe,
-      et:(f.slice(8,10)+"/"+f.slice(5,7)+" "+f.slice(11,16))}; });
+      fecha:f, et:(f.slice(8,10)+"/"+f.slice(5,7)+" "+f.slice(11,19))}; });
   // anular par cobro + devolución del mismo monto (devolución inmediata, no se factura)
   const devs=d.rows.filter(m=>/devoluc/i.test(String(m.tipo)) && m.importe<0).map(m=>Math.round(Math.abs(m.importe)*100));
-  for(const dc of devs){ const i=cobros.findIndex(c=>c.cents===dc); if(i>=0) cobros.splice(i,1); }
+  for(const dc of devs){ const i=indiv.findIndex(c=>c.cents===dc); if(i>=0) indiv.splice(i,1); }
+  // agrupar cobros del MISMO timestamp exacto: MP parte una venta en varias líneas (cobro + descuento/envío) → es un solo combo
+  const groups={};
+  for(const c of indiv){ (groups[c.fecha]=groups[c.fecha]||[]).push(c); }
+  const cobros=Object.values(groups).map(g=>{
+    if(g.length===1) return {cents:g[0].cents, importe:g[0].importe, et:g[0].et, combo:null};
+    const cents=g.reduce((s,c)=>s+c.cents,0);
+    return {cents, importe:+(cents/100).toFixed(2), et:g[0].et, combo:g.map(c=>c.importe)}; });
   // filtrar Zeta por el rango de fechas del bloque (puede tener varios días); si no hay fecha, usar todo
   const lo=d.dmin||d.key, hi=d.dmax||d.key;
   let Z=ZETA.filter(z=>!z.fk || (z.fk>=lo && z.fk<=hi)); if(!Z.length) Z=ZETA;
   const zpool=Z.map(z=>z.cents);
   const facturadas=[], faltantes=[];
   for(const c of cobros){ const i=zpool.indexOf(c.cents); if(i>=0){ facturadas.push(c); zpool.splice(i,1); } else faltantes.push(c); }
+  // 2º paso: posible diferencia de envío. Un cobro de MP que no matchea exacto pero hay un monto en Zeta
+  // un poco menor (la empleada cargó sin el envío). Solo se SUGIERE cuando existe ese monto; no se inventa.
+  const SHIP_MIN=40, SHIP_MAX=300;
+  const envios=[];
+  for(let i=faltantes.length-1;i>=0;i--){ const f=faltantes[i];
+    let bj=-1,bd=Infinity;
+    for(let j=0;j<zpool.length;j++){ const dl=+((f.cents-zpool[j])/100).toFixed(2);
+      if(dl>=SHIP_MIN && dl<=SHIP_MAX && dl<bd){ bd=dl; bj=j; } }
+    if(bj>=0){ envios.unshift({et:f.et, mp:f.importe, zeta:+(zpool[bj]/100).toFixed(2), dif:bd, combo:f.combo});
+      zpool.splice(bj,1); faltantes.splice(i,1); } }
   const sobr=zpool.map(c=>c/100);
   const totFalt=+(faltantes.reduce((s,c)=>s+c.importe,0)).toFixed(2);
+  const totEnvio=+(envios.reduce((s,e)=>s+e.dif,0)).toFixed(2);
   const totFact=+(facturadas.reduce((s,c)=>s+c.importe,0)).toFixed(2);
-  return {cobros,facturadas,faltantes,sobr,totFalt,totFact};
+  const sinFacturarP3=+(totFalt+totEnvio).toFixed(2);   // efectivo: faltantes puros + sólo las diferencias de envío
+  return {cobros,facturadas,faltantes,envios,sobr,totFalt,totEnvio,totFact,sinFacturarP3};
 }
-function sinColorTotal(d){ const v=computeVerif(d); return v?v.totFalt:null; }
+function sinColorTotal(d){ const v=computeVerif(d); return v?v.sinFacturarP3:null; }
 function runVerif(){
   const box=$("verifResult"); if(!box) return;
   const d=DAYS[SEL]; const v=(ZETA&&d)?computeVerif(d):null;
   if(!v){ box.innerHTML=""; return; }
-  const {facturadas,faltantes,sobr,totFalt,totFact,cobros}=v;
+  const {facturadas,faltantes,envios,sobr,totFalt,totEnvio,totFact,cobros}=v;
+  const cmb=c=>c.combo?` <span style="color:var(--muted);font-size:11px">(combo: ${c.combo.map(x=>fmt(x)).join(" + ")})</span>`:"";
   let html=`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
     <span class="vchip ok">${facturadas.length} en Zeta (verde)</span>
     <span class="vchip ${faltantes.length?'bad':'ok'}">${faltantes.length} sin color</span>
+    ${envios.length?`<span class="vchip warn">${envios.length} posible envío</span>`:""}
     <span class="vchip muted">${cobros.length} cobros del bloque</span></div>`;
   html+=`<div class="vbox ok"><b>\u2713 Están en Zeta — marcá VERDE:</b>`;
   html+= facturadas.length
-    ? `<table class="vtab"><tbody>`+facturadas.map(c=>`<tr><td>${c.et||''}</td><td class="num">$ ${fmt(c.importe)}</td></tr>`).join("")+
+    ? `<table class="vtab"><tbody>`+facturadas.map(c=>`<tr><td>${c.et||''}</td><td class="num">$ ${fmt(c.importe)}${cmb(c)}</td></tr>`).join("")+
       `<tr class="tot"><td>Total</td><td class="num">$ ${fmt(totFact)}</td></tr></tbody></table>`
     : `<div style="margin-top:6px;color:var(--muted)">Ningún cobro coincide con Zeta todavía.</div>`;
   html+=`</div>`;
   html+=`<div class="vbox bad" style="margin-top:10px"><b>Faltan en Zeta — dejá SIN COLOR (= cobros sin facturar):</b>`;
   html+= faltantes.length
-    ? `<table class="vtab"><tbody>`+faltantes.map(c=>`<tr><td>${c.et||''}</td><td class="num">$ ${fmt(c.importe)}</td></tr>`).join("")+
+    ? `<table class="vtab"><tbody>`+faltantes.map(c=>`<tr><td>${c.et||''}</td><td class="num">$ ${fmt(c.importe)}${cmb(c)}</td></tr>`).join("")+
       `<tr class="tot"><td>Total sin facturar</td><td class="num">$ ${fmt(totFalt)}</td></tr></tbody></table>`
-    : `<div style="margin-top:6px;color:var(--ok)">\u2713 Todos los cobros del bloque ya están en Zeta.</div>`;
+    : `<div style="margin-top:6px;color:var(--ok)">\u2713 Sin faltantes puros.</div>`;
   html+=`</div>`;
+  if(envios.length){
+    html+=`<div class="vbox warn" style="margin-top:10px"><b>Posible diferencia de envío — revisá:</b>
+      <div style="font-size:12px;color:var(--muted);margin:4px 0 6px">El cobro de MP es un poco mayor que un monto cargado en Zeta. Suele ser el envío que no se cargó: agregá el crédito por la diferencia.</div>
+      <table class="vtab"><tbody>`+
+      envios.map(e=>`<tr><td>${e.et||''}</td><td class="num">MP $ ${fmt(e.mp)}${cmb(e)} vs Zeta $ ${fmt(e.zeta)}</td><td class="num"><b>dif $ ${fmt(e.dif)}</b></td></tr>`).join("")+
+      `<tr class="tot"><td>Total diferencias</td><td></td><td class="num">$ ${fmt(totEnvio)}</td></tr></tbody></table></div>`;
+  }
   if(sobr.length){
-    html+=`<div class="vbox warn" style="margin-top:10px"><b>En Zeta sin cobro que coincida (revisar):</b> `+
+    html+=`<div class="vbox warn" style="margin-top:10px"><b>En Zeta sin cobro de este bloque:</b>
+      <div style="font-size:12px;color:var(--muted);margin:4px 0 6px">Suelen ser cobros de archivos anteriores que recién ahora facturaste — es normal.</div>`+
       sobr.map(v=>"$ "+fmt(v)).join(" · ")+`</div>`;
   }
   box.innerHTML=html;
